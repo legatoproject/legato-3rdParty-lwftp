@@ -196,7 +196,7 @@ static err_t lwftp_data_open(lwftp_session_t *s, struct pbuf *p)
     unsigned int b = strtoul(ptr+1,&ptr,10);
     unsigned int c = strtoul(ptr+1,&ptr,10);
     unsigned int d = strtoul(ptr+1,&ptr,10);
-    IP4_ADDR(&data_server,a,b,c,d);
+    IP_ADDR4(&data_server,a,b,c,d);
   } while(0);
   data_port  = strtoul(ptr+1,&ptr,10) << 8;
   data_port |= strtoul(ptr+1,&ptr,10) & 255;
@@ -338,7 +338,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
               lwftp_send_msg(s, PTRNLEN("RETR "));
               break;
             default:
-              LOG_ERROR("Unexpected internal state");
+              LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected internal state\n"));
               s->target_state = LWFTP_QUIT;
             }
           lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
@@ -387,7 +387,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       }
       break;
     case LWFTP_DATAEND:
-      LOG_TRACE("forced end of data session");
+      LWIP_DEBUGF(LWFTP_TRACE, ("lwftp: forced end of data session\n"));
       break;
     case LWFTP_QUIT_SENT:
       if (response>0) {
@@ -439,7 +439,7 @@ static void lwftp_start_RETR(void *arg)
     s->control_state = LWFTP_TYPE_SENT;
     s->target_state = LWFTP_RETR_SENT;
   } else {
-    LOG_ERROR("Unexpected condition");
+    LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected condition\n"));
     if (s->done_fn) s->done_fn(s->handle, LWFTP_RESULT_ERR_INTERNAL);
   }
 }
@@ -456,7 +456,7 @@ static void lwftp_start_STOR(void *arg)
     s->control_state = LWFTP_TYPE_SENT;
     s->target_state = LWFTP_STOR_SENT;
   } else {
-    LOG_ERROR("Unexpected condition");
+    LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected condition\n"));
     if (s->done_fn) s->done_fn(s->handle, LWFTP_RESULT_ERR_INTERNAL);
   }
 }
@@ -629,7 +629,7 @@ err_t lwftp_retrieve(lwftp_session_t *s)
   if ( error == ERR_OK ) {
     retval = LWFTP_RESULT_INPROGRESS;
   } else {
-    LOG_ERROR("cannot start RETR (%s)",lwip_strerr(error));
+    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot start RETR (%s)\n",lwip_strerr(error)));
     retval = LWFTP_RESULT_ERR_INTERNAL;
   }
 
@@ -668,7 +668,7 @@ err_t lwftp_store(lwftp_session_t *s)
   if ( error == ERR_OK ) {
     retval = LWFTP_RESULT_INPROGRESS;
   } else {
-    LOG_ERROR("cannot start STOR (%s)",lwip_strerr(error));
+    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot start STOR (%s)\n",lwip_strerr(error)));
     retval = LWFTP_RESULT_ERR_INTERNAL;
   }
 
@@ -693,7 +693,7 @@ void lwftp_close(lwftp_session_t *s)
   if ( error != ERR_OK ) {
     // This is a critical error, try to close anyway
     // polling process may save us
-    LOG_ERROR("cannot request for close");
+    LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: cannot request for close\n"));
     s->control_state = LWFTP_QUIT;
   }
 }
