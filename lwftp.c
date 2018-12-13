@@ -329,12 +329,16 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
     case LWFTP_PASV_SENT:
       if (response>0) {
         if (response==227) {
-          lwftp_data_open(s,p);
           switch (s->target_state) {
+            case LWFTP_DELE_SENT:
+              lwftp_send_msg(s, PTRNLEN("DELE "));
+              break;
             case LWFTP_STOR_SENT:
+              lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("STOR "));
               break;
             case LWFTP_RETR_SENT:
+              lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("RETR "));
               break;
             default:
@@ -373,6 +377,16 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
           s->control_state = LWFTP_DATAEND;
           LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:expected 150, received %d\n",response));
         }
+      }
+      break;
+    case LWFTP_DELE_SENT:
+      if (response > 0) {
+        if (response == 250) {
+          result = LWFTP_RESULT_OK;
+        } else {
+          LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: expected 250, received %d\n", response));
+        }
+        s->control_state = LWFTP_DATAEND;
       }
       break;
     case LWFTP_XFERING:
@@ -427,21 +441,31 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   }
 }
 
+/** Start sending an arbitrary command.
+ *
+ *  @param pointer to lwftp session
+ */
+static void lwftp_start_cmd(lwftp_session_t *s, lwftp_state_t target_state)
+{
+  if ( s->control_state == LWFTP_LOGGED ) {
+    lwftp_send_msg(s, PTRNLEN("TYPE I\n"));
+    s->control_state = LWFTP_TYPE_SENT;
+    s->target_state = target_state;
+  } else {
+    LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected condition\n"));
+    if (s->done_fn != NULL) {
+      s->done_fn(s->handle, LWFTP_RESULT_ERR_INTERNAL);
+    }
+  }
+}
+
+
 /** Start a RETR data session
  * @param pointer to lwftp session
  */
 static void lwftp_start_RETR(void *arg)
 {
-  lwftp_session_t *s = (lwftp_session_t*)arg;
-
-  if ( s->control_state == LWFTP_LOGGED ) {
-    lwftp_send_msg(s, PTRNLEN("TYPE I\n"));
-    s->control_state = LWFTP_TYPE_SENT;
-    s->target_state = LWFTP_RETR_SENT;
-  } else {
-    LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected condition\n"));
-    if (s->done_fn) s->done_fn(s->handle, LWFTP_RESULT_ERR_INTERNAL);
-  }
+  lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_RETR_SENT);
 }
 
 /** Start a STOR data session
@@ -449,16 +473,16 @@ static void lwftp_start_RETR(void *arg)
  */
 static void lwftp_start_STOR(void *arg)
 {
-  lwftp_session_t *s = (lwftp_session_t*)arg;
+  lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_STOR_SENT);
+}
 
-  if ( s->control_state == LWFTP_LOGGED ) {
-    lwftp_send_msg(s, PTRNLEN("TYPE I\n"));
-    s->control_state = LWFTP_TYPE_SENT;
-    s->target_state = LWFTP_STOR_SENT;
-  } else {
-    LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected condition\n"));
-    if (s->done_fn) s->done_fn(s->handle, LWFTP_RESULT_ERR_INTERNAL);
-  }
+/** Send DELE to delete remote file
+ *
+ *  @param pointer to lwftp session
+ */
+static void lwftp_send_DELE(void *arg)
+{
+  lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_DELE_SENT);
 }
 
 /** Send QUIT to terminate control session
@@ -674,6 +698,47 @@ err_t lwftp_store(lwftp_session_t *s)
 
 exit:
   if (s->done_fn) s->done_fn(s->handle, retval);
+  return retval;
+}
+
+
+/** Delete a remote file.
+ *
+ *  @param Session structure
+ *
+ *  @return
+ *    - LWFTP_RESULT_ERR_ARGUMENT - Invalid session state.
+ *    - LWFTP_RESULT_INPROGRESS   - In the process of sending DELE command.
+ *    - LWFTP_RESULT_ERR_INTERNAL - TCP send failed.
+ */
+err_t lwftp_delete(lwftp_session_t *s)
+{
+  enum lwftp_results  retval = LWFTP_RESULT_ERR_UNKNOWN;
+  err_t               error;
+
+  // Check user supplied data
+  if ((s->control_state != LWFTP_LOGGED)  ||
+      (s->remote_path == NULL)            ||
+      (s->data_pcb != NULL))
+  {
+    LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: invalid session data\n"));
+    retval = LWFTP_RESULT_ERR_ARGUMENT;
+    goto exit;
+  }
+
+  // Send delete command
+  error = tcpip_callback(lwftp_send_DELE, s);
+  if (error == ERR_OK) {
+    retval = LWFTP_RESULT_INPROGRESS;
+  } else {
+    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot send DELE (%s)\n", lwip_strerr(error)));
+    retval = LWFTP_RESULT_ERR_INTERNAL;
+  }
+
+exit:
+  if (s->done_fn != NULL) {
+    s->done_fn(s->handle, retval);
+  }
   return retval;
 }
 
