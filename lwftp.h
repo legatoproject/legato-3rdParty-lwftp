@@ -73,7 +73,8 @@ typedef enum  {
   LWFTP_QUIT,
   LWFTP_QUIT_SENT,
   LWFTP_CLOSING,
-  LWFTP_DELE_SENT
+  LWFTP_DELE_SENT,
+  LWFTP_SIZE_SENT
 } lwftp_state_t;
 
 /** LWFTP session structure */
@@ -102,6 +103,7 @@ err_t lwftp_connect(lwftp_session_t *s);
 err_t lwftp_store(lwftp_session_t *s);
 err_t lwftp_retrieve(lwftp_session_t *s);
 err_t lwftp_delete(lwftp_session_t *s);
+err_t lwftp_size(lwftp_session_t *s);
 void  lwftp_close(lwftp_session_t *s);
 
 #ifdef __cplusplus

@@ -269,12 +269,14 @@ static void lwftp_control_close(lwftp_session_t *s, int result)
  */
 static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, struct pbuf *p)
 {
-  uint response = 0;
-  int result = LWFTP_RESULT_ERR_SRVR_RESP;
+  char                *remaining_payload = NULL;
+  int                  result = LWFTP_RESULT_ERR_SRVR_RESP;
+  uint                 response = 0;
+  unsigned long long   size;
 
   // Try to get response number
   if (p) {
-    response = strtoul(p->payload, NULL, 10);
+    response = strtoul(p->payload, &remaining_payload, 10);
     LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
   }
 
@@ -333,6 +335,9 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
             case LWFTP_DELE_SENT:
               lwftp_send_msg(s, PTRNLEN("DELE "));
               break;
+            case LWFTP_SIZE_SENT:
+              lwftp_send_msg(s, PTRNLEN("SIZE "));
+              break;
             case LWFTP_STOR_SENT:
               lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("STOR "));
@@ -385,6 +390,20 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
           result = LWFTP_RESULT_OK;
         } else {
           LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: expected 250, received %d\n", response));
+        }
+        s->control_state = LWFTP_DATAEND;
+      }
+      break;
+    case LWFTP_SIZE_SENT:
+      if (response > 0) {
+        if (response == 213) {
+          result = LWFTP_RESULT_OK;
+          size = strtoull(remaining_payload, NULL, 10);
+          if (s->data_sink != NULL) {
+            s->data_sink(s->handle, (char *) &size, sizeof(size));
+          }
+        } else {
+          LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: expected 213, received %d\n", response));
         }
         s->control_state = LWFTP_DATAEND;
       }
@@ -476,13 +495,22 @@ static void lwftp_start_STOR(void *arg)
   lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_STOR_SENT);
 }
 
-/** Send DELE to delete remote file
+/** Send DELE to delete remote file.
  *
- *  @param pointer to lwftp session
+ *  @param  arg Pointer to lwftp session.
  */
 static void lwftp_send_DELE(void *arg)
 {
   lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_DELE_SENT);
+}
+
+/** Send SIZE get size of remote file.
+ *
+ *  @param  arg Pointer to lwftp session.
+ */
+static void lwftp_send_SIZE(void *arg)
+{
+  lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_SIZE_SENT);
 }
 
 /** Send QUIT to terminate control session
@@ -624,94 +652,26 @@ exit:
 }
 
 
-/** Retrieve data from a remote file
- * @param Session structure
- */
-err_t lwftp_retrieve(lwftp_session_t *s)
-{
-  err_t error;
-  enum lwftp_results retval = LWFTP_RESULT_ERR_UNKNOWN;
-
-  // Check user supplied data
-  if ( (s->control_state!=LWFTP_LOGGED) ||
-       !s->remote_path ||
-       s->data_pcb )
-  {
-    LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:invalid session data\n"));
-    retval = LWFTP_RESULT_ERR_ARGUMENT;
-    goto exit;
-  }
-  // Get data pcb
-  s->data_pcb = tcp_new();
-  if (!s->data_pcb) {
-    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp:cannot alloc data_pcb (low memory?)\n"));
-    retval = LWFTP_RESULT_ERR_MEMORY;
-    goto exit;
-  }
-  // Initiate transfer
-  error = tcpip_callback(lwftp_start_RETR, s);
-  if ( error == ERR_OK ) {
-    retval = LWFTP_RESULT_INPROGRESS;
-  } else {
-    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot start RETR (%s)\n",lwip_strerr(error)));
-    retval = LWFTP_RESULT_ERR_INTERNAL;
-  }
-
-exit:
-  if (s->done_fn) s->done_fn(s->handle, retval);
-  return retval;
-}
-
-
-/** Store data to a remote file
- * @param Session structure
- */
-err_t lwftp_store(lwftp_session_t *s)
-{
-  err_t error;
-  enum lwftp_results retval = LWFTP_RESULT_ERR_UNKNOWN;
-
-  // Check user supplied data
-  if ( (s->control_state!=LWFTP_LOGGED) ||
-       !s->remote_path ||
-       s->data_pcb )
-  {
-    LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:invalid session data\n"));
-    retval = LWFTP_RESULT_ERR_ARGUMENT;
-    goto exit;
-  }
-  // Get data pcb
-  s->data_pcb = tcp_new();
-  if (!s->data_pcb) {
-    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp:cannot alloc data_pcb (low memory?)\n"));
-    retval = LWFTP_RESULT_ERR_MEMORY;
-    goto exit;
-  }
-  // Initiate transfer
-  error = tcpip_callback(lwftp_start_STOR, s);
-  if ( error == ERR_OK ) {
-    retval = LWFTP_RESULT_INPROGRESS;
-  } else {
-    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot start STOR (%s)\n",lwip_strerr(error)));
-    retval = LWFTP_RESULT_ERR_INTERNAL;
-  }
-
-exit:
-  if (s->done_fn) s->done_fn(s->handle, retval);
-  return retval;
-}
-
-
-/** Delete a remote file.
+/** Initiate a selected FTP command.
  *
- *  @param Session structure
+ *  @param  s         Session structure.
+ *  @param  command   Name of command for logging.
+ *  @param  send_func Callback to initiate command.
+ *  @param  with_data Boolean indicating that a data connection should be opened.
  *
  *  @return
  *    - LWFTP_RESULT_ERR_ARGUMENT - Invalid session state.
- *    - LWFTP_RESULT_INPROGRESS   - In the process of sending DELE command.
+ *    - LWFTP_RESULT_INPROGRESS   - In the process of sending command.
  *    - LWFTP_RESULT_ERR_INTERNAL - TCP send failed.
+ *    - LWFTP_RESULT_ERR_MEMORY   - Failed to obtain TCP session for data connection.
  */
-err_t lwftp_delete(lwftp_session_t *s)
+static err_t lwftp_initiate_command
+(
+  lwftp_session_t   *s,
+  const char        *command,
+  tcpip_callback_fn  send_func,
+  int                with_data
+)
 {
   enum lwftp_results  retval = LWFTP_RESULT_ERR_UNKNOWN;
   err_t               error;
@@ -726,12 +686,22 @@ err_t lwftp_delete(lwftp_session_t *s)
     goto exit;
   }
 
-  // Send delete command
-  error = tcpip_callback(lwftp_send_DELE, s);
+  if (with_data) {
+    // Get data pcb
+    s->data_pcb = tcp_new();
+    if (s->data_pcb == NULL) {
+      LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot alloc data_pcb (low memory?)\n"));
+      retval = LWFTP_RESULT_ERR_MEMORY;
+      goto exit;
+    }
+  }
+
+  // Send command
+  error = tcpip_callback(send_func, s);
   if (error == ERR_OK) {
     retval = LWFTP_RESULT_INPROGRESS;
   } else {
-    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot send DELE (%s)\n", lwip_strerr(error)));
+    LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp: cannot send %s (%s)\n", command, lwip_strerr(error)));
     retval = LWFTP_RESULT_ERR_INTERNAL;
   }
 
@@ -740,6 +710,54 @@ exit:
     s->done_fn(s->handle, retval);
   }
   return retval;
+}
+
+
+/** Retrieve data from a remote file
+ * @param Session structure
+ */
+err_t lwftp_retrieve(lwftp_session_t *s)
+{
+  return lwftp_initiate_command(s, "RETR", &lwftp_start_RETR, 1);
+}
+
+
+/** Store data to a remote file
+ * @param Session structure
+ */
+err_t lwftp_store(lwftp_session_t *s)
+{
+  return lwftp_initiate_command(s, "STOR", &lwftp_start_STOR, 1);
+}
+
+
+/** Delete a remote file.
+ *
+ *  @param  s Session structure.
+ *
+ *  @return
+ *    - LWFTP_RESULT_ERR_ARGUMENT - Invalid session state.
+ *    - LWFTP_RESULT_INPROGRESS   - In the process of sending DELE command.
+ *    - LWFTP_RESULT_ERR_INTERNAL - TCP send failed.
+ */
+err_t lwftp_delete(lwftp_session_t *s)
+{
+  return lwftp_initiate_command(s, "DELE", &lwftp_send_DELE, 0);
+}
+
+
+/** Query the size of a remote file.
+ *
+ *  @param  s Session structure.
+ *
+ *  @return
+ *    - LWFTP_RESULT_ERR_ARGUMENT - Invalid session state.
+ *    - LWFTP_RESULT_INPROGRESS   - In the process of sending SIZE command.
+ *    - LWFTP_RESULT_ERR_INTERNAL - TCP send failed.
+ */
+err_t lwftp_size(lwftp_session_t *s)
+{
+  return lwftp_initiate_command(s, "SIZE", &lwftp_send_SIZE, 0);
 }
 
 
