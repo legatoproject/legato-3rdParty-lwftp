@@ -388,6 +388,8 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       if (response > 0) {
         if (response == 250) {
           result = LWFTP_RESULT_OK;
+        } else if (response == 550) {
+          result = LWFTP_RESULT_ERR_FILENAME;
         } else {
           LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: expected 250, received %d\n", response));
         }
@@ -402,6 +404,8 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
           if (s->data_sink != NULL) {
             s->data_sink(s->handle, (char *) &size, sizeof(size));
           }
+        } else if (response == 550) {
+          result = LWFTP_RESULT_ERR_FILENAME;
         } else {
           LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: expected 213, received %d\n", response));
         }
