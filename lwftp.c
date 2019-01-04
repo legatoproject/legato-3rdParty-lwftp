@@ -31,6 +31,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 #include "lwftp.h"
 #include "lwip/tcp.h"
 #include "lwip/tcpip.h"
@@ -211,20 +212,35 @@ static err_t lwftp_data_open(lwftp_session_t *s, struct pbuf *p)
   return error;
 }
 
+/** Send a message to control connection and optionally copy the data.
+ *
+ *  @param  s     Pointer to lwftp session data.
+ *  @param  msg   Pointer to message string.
+ *  @param  len   Length of message string.
+ *  @param  copy  Boolean indicating that the data should be copied by lwip (e.g. it is only present
+ *                on the stack).
+ *
+ *  @return Function status.
+ */
+static err_t lwftp_send_msg_copy(lwftp_session_t *s, const char *msg, size_t len, int copy)
+{
+  err_t error;
+
+  LWIP_DEBUGF(LWFTP_TRACE,("lwftp:sending %s",msg));
+  error = tcp_write(s->control_pcb, msg, len, (copy ? TCP_WRITE_FLAG_COPY : 0));
+  if ( error != ERR_OK ) {
+      LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:cannot write (%s)\n",lwip_strerr(error)));
+  }
+  return error;
+}
+
 /** Send a message to control connection
  * @param pointer to lwftp session data
  * @param pointer to message string
  */
 static err_t lwftp_send_msg(lwftp_session_t *s, const char* msg, size_t len)
 {
-  err_t error;
-
-  LWIP_DEBUGF(LWFTP_TRACE,("lwftp:sending %s",msg));
-  error = tcp_write(s->control_pcb, msg, len, 0);
-  if ( error != ERR_OK ) {
-      LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:cannot write (%s)\n",lwip_strerr(error)));
-  }
-  return error;
+  return lwftp_send_msg_copy(s, msg, len, 0);
 }
 
 /** Close data connection
@@ -269,6 +285,7 @@ static void lwftp_control_close(lwftp_session_t *s, int result)
  */
 static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, struct pbuf *p)
 {
+  char                 buf[32];
   char                *remaining_payload = NULL;
   int                  result = LWFTP_RESULT_ERR_SRVR_RESP;
   uint                 response = 0;
@@ -334,27 +351,55 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
           switch (s->target_state) {
             case LWFTP_DELE_SENT:
               lwftp_send_msg(s, PTRNLEN("DELE "));
+              lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
               break;
             case LWFTP_SIZE_SENT:
               lwftp_send_msg(s, PTRNLEN("SIZE "));
+              lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
               break;
             case LWFTP_STOR_SENT:
               lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("STOR "));
+              lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
+              break;
+            case LWFTP_APPE_SENT:
+              lwftp_data_open(s,p);
+              lwftp_send_msg(s, PTRNLEN("APPE "));
+              lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
               break;
             case LWFTP_RETR_SENT:
               lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("RETR "));
+              lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
+              break;
+            case LWFTP_REST_SENT:
+              lwftp_send_msg(s, PTRNLEN("REST "));
+              snprintf(buf, sizeof(buf), "%llu", s->restart);
+              LWIP_DEBUGF(LWFTP_TRACE, ("lwftp: Requesting restart at offset %s\n", buf));
+              lwftp_send_msg_copy(s, buf, strlen(buf), 1);
               break;
             default:
               LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected internal state\n"));
               s->target_state = LWFTP_QUIT;
             }
-          lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
           lwftp_send_msg(s, PTRNLEN("\n"));
           s->control_state = s->target_state;
         } else {
           s->control_state = LWFTP_QUIT;
+        }
+      }
+      break;
+    case LWFTP_REST_SENT:
+      if (response > 0) {
+        if (response == 350) {
+          lwftp_data_open(s,p);
+          lwftp_send_msg(s, PTRNLEN("RETR "));
+          lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
+          lwftp_send_msg(s, PTRNLEN("\n"));
+          s->control_state = LWFTP_RETR_SENT;
+        } else {
+          s->control_state = LWFTP_DATAEND;
+          LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:expected 350, received: %d\n", response));
         }
       }
       break;
@@ -374,6 +419,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       }
       break;
     case LWFTP_STOR_SENT:
+    case LWFTP_APPE_SENT:
       if (response>0) {
         if (response==150) {
           s->control_state = LWFTP_XFERING;
@@ -488,7 +534,8 @@ static void lwftp_start_cmd(lwftp_session_t *s, lwftp_state_t target_state)
  */
 static void lwftp_start_RETR(void *arg)
 {
-  lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_RETR_SENT);
+  lwftp_session_t *session = arg;
+  lwftp_start_cmd(session, (session->restart > 0 ? LWFTP_REST_SENT : LWFTP_RETR_SENT));
 }
 
 /** Start a STOR data session
@@ -497,6 +544,14 @@ static void lwftp_start_RETR(void *arg)
 static void lwftp_start_STOR(void *arg)
 {
   lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_STOR_SENT);
+}
+
+/** Start a APPE data session
+ * @param pointer to lwftp session
+ */
+static void lwftp_start_APPE(void *arg)
+{
+  lwftp_start_cmd((lwftp_session_t *) arg, LWFTP_APPE_SENT);
 }
 
 /** Send DELE to delete remote file.
@@ -732,6 +787,15 @@ err_t lwftp_retrieve(lwftp_session_t *s)
 err_t lwftp_store(lwftp_session_t *s)
 {
   return lwftp_initiate_command(s, "STOR", &lwftp_start_STOR, 1);
+}
+
+
+/** Append data to a remote file
+ * @param Session structure
+ */
+err_t lwftp_append(lwftp_session_t *s)
+{
+  return lwftp_initiate_command(s, "APPE", &lwftp_start_APPE, 1);
 }
 
 

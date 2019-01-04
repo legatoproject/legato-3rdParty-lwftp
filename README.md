@@ -6,10 +6,13 @@ This client is designed as a state machine with a very low level
 interface. It can be used as a library to build smarter clients with
 more features.
 
-The state machine supports 4 basic operations:
+The state machine supports 7 basic operations:
 * connect
 * store
+* append
 * retrieve
+* size
+* delete
 * close
 
 LWFTP requires the remote server to support binary transfer and
