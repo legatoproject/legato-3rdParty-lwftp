@@ -192,15 +192,24 @@ static err_t lwftp_data_open(lwftp_session_t *s, struct pbuf *p)
   // Find server connection parameter
   ptr = strchr(p->payload, '(');
   if (!ptr) return ERR_BUF;
-  do {
+  if (IP_IS_V4(&s->server_ip)) {
     unsigned int a = strtoul(ptr+1,&ptr,10);
     unsigned int b = strtoul(ptr+1,&ptr,10);
     unsigned int c = strtoul(ptr+1,&ptr,10);
     unsigned int d = strtoul(ptr+1,&ptr,10);
     IP_ADDR4(&data_server,a,b,c,d);
-  } while(0);
-  data_port  = strtoul(ptr+1,&ptr,10) << 8;
-  data_port |= strtoul(ptr+1,&ptr,10) & 255;
+
+    data_port  = strtoul(ptr+1,&ptr,10) << 8;
+    data_port |= strtoul(ptr+1,&ptr,10) & 255;
+  } else {
+    ip_addr_copy(data_server, s->server_ip);
+    for (++ptr; *ptr == '|'; ++ptr)
+    {
+      // do nothing
+    }
+    data_port = strtoul(ptr, &ptr, 10);
+    ++ptr;
+  }
   if (*ptr!=')') return ERR_BUF;
 
   // Open data session
@@ -338,7 +347,11 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
     case LWFTP_TYPE_SENT:
       if (response>0) {
         if (response==200) {
-          lwftp_send_msg(s, PTRNLEN("PASV\n"));
+          if (IP_IS_V4(&s->server_ip)) {
+            lwftp_send_msg(s, PTRNLEN("PASV\n"));
+          } else {
+            lwftp_send_msg(s, PTRNLEN("EPSV\n"));
+          }
           s->control_state = LWFTP_PASV_SENT;
         } else {
           s->control_state = LWFTP_QUIT;
@@ -347,7 +360,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       break;
     case LWFTP_PASV_SENT:
       if (response>0) {
-        if (response==227) {
+        if (response == 227 || response == 229) {
           switch (s->target_state) {
             case LWFTP_DELE_SENT:
               lwftp_send_msg(s, PTRNLEN("DELE "));
@@ -373,6 +386,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
               lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
               break;
             case LWFTP_REST_SENT:
+              lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("REST "));
               snprintf(buf, sizeof(buf), "%llu", s->restart);
               LWIP_DEBUGF(LWFTP_TRACE, ("lwftp: Requesting restart at offset %s\n", buf));
@@ -392,7 +406,6 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
     case LWFTP_REST_SENT:
       if (response > 0) {
         if (response == 350) {
-          lwftp_data_open(s,p);
           lwftp_send_msg(s, PTRNLEN("RETR "));
           lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
           lwftp_send_msg(s, PTRNLEN("\n"));
