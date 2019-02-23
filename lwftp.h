@@ -99,6 +99,9 @@ typedef struct {
   lwftp_state_t       data_state;
   struct tcp_pcb      *control_pcb;
   struct tcp_pcb      *data_pcb;
+  u32_t               data_timeout;
+  u32_t               ctrl_timeout;
+  u32_t               prev_check;
 } lwftp_session_t;
 
 // LWFTP API

@@ -36,6 +36,9 @@
 #include "lwip/tcp.h"
 #include "lwip/tcpip.h"
 
+/** Timeout poll interval in TCP coarse timer intervals. */
+#define POLL_INTERVAL   2
+
 /** Enable debugging for LWFTP */
 #ifndef LWFTP_DEBUG
 #define LWFTP_DEBUG   LWIP_DBG_ON
@@ -50,6 +53,8 @@
 #define PTRNLEN(s)  s,(sizeof(s)-1)
 
 static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, struct pbuf *p);
+static void lwftp_control_err(void *arg, err_t err);
+static void lwftp_data_err(void *arg, err_t err);
 
 /** Close control or data pcb
  * @param pointer to lwftp session data
@@ -65,6 +70,138 @@ static err_t lwftp_pcb_close(struct tcp_pcb *tpcb)
   if ( error != ERR_OK ) {
     LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp:pcb close failure, not implemented\n"));
   }
+  return ERR_OK;
+}
+
+/** Start or restart the timeout for receiving data on the data port.
+ *
+ *  @param  s Pointer to lwftp session data.
+ */
+static void lwftp_data_start_timeout(lwftp_session_t *s)
+{
+  s->data_timeout = sys_now() + s->timeout;
+  if (s->data_timeout == 0)
+  {
+    // If the timeout wrapped to exactly 0, push it out by 1 ms.
+    s->data_timeout = 1;
+  }
+}
+
+/** Cancel the timeout for receiving data on the data port.
+ *
+ *  @param  s Pointer to lwftp session data.
+ */
+static void lwftp_data_stop_timeout(lwftp_session_t *s)
+{
+  s->data_timeout = 0;
+}
+
+/** Start or restart the timeout for receiving data on the control port.
+ *
+ *  @param  s Pointer to lwftp session data.
+ */
+static void lwftp_ctrl_start_timeout(lwftp_session_t *s)
+{
+  s->ctrl_timeout = sys_now() + s->timeout;
+  if (s->ctrl_timeout == 0)
+  {
+    // If the timeout wrapped to exactly 0, push it out by 1 ms.
+    s->ctrl_timeout = 1;
+  }
+}
+
+/** Cancel the timeout for receiving data on the control port.
+ *
+ *  @param  s Pointer to lwftp session data.
+ */
+static void lwftp_ctrl_stop_timeout(lwftp_session_t *s)
+{
+  s->ctrl_timeout = 0;
+}
+
+/** Determine if a timeout has occurred.
+ *
+ *  @param  now       Current timestamp.
+ *  @param  prev      Timestamp of last check.
+ *  @param  interval  Timeout interval.
+ *  @param  timeout   Next scheduled timeout.
+ *
+ *  @return True if a timeout has occurred, false otherwise.
+ */
+static inline int timed_out(u32_t now, u32_t prev, u32_t interval, u32_t timeout)
+{
+  if (timeout > 0)
+  {
+    // Timeout enabled
+    if (now < prev)
+    {
+      // Time has wrapped
+      if (timeout >= UINT32_MAX - interval)
+      {
+        // "Next" timeout is in the past due to wrapping
+        return 1;
+      }
+      else
+      {
+        // Both time and timeout have wrapped
+        return (timeout < now);
+      }
+    }
+    else
+    {
+      // Time has not wrapped
+      if (timeout <= interval)
+      {
+        // Timeout has wrapped
+        return 0;
+      }
+      else
+      {
+        // Nothing has wrapped (the normal case)
+        return (timeout < now);
+      }
+    }
+  }
+
+  // Timeout disabled
+  return 0;
+}
+
+/** Check if a timeout has expired for the control or data ports.
+ *
+ *  @param  s     Pointer to lwftp session data.
+ *  @param  tpcb  Control or data TCP socket.
+ *
+ *  @return Function status.
+ */
+static err_t lwftp_check_timeout(lwftp_session_t *s, struct tcp_pcb *tpcb)
+{
+  u32_t now = sys_now();
+  u32_t prev = s->prev_check;
+  s->prev_check = now;
+
+  if (tpcb == s->control_pcb)
+  {
+    if (timed_out(now, prev, s->timeout, s->ctrl_timeout))
+    {
+      s->prev_check = now;
+      LWIP_DEBUGF(LWFTP_STATE, ("lwftp: control timeout\n"));
+      lwftp_control_err(s, ERR_TIMEOUT);
+      return ERR_ABRT;
+    }
+  }
+  else if (tpcb == s->data_pcb)
+  {
+    if (timed_out(now, prev, s->timeout, s->data_timeout))
+    {
+      s->prev_check = now;
+      LWIP_DEBUGF(LWFTP_STATE, ("lwftp: data timeout\n"));
+      tcp_abort(s->data_pcb);
+      lwftp_data_err(s, ERR_TIMEOUT);
+      return ERR_ABRT;
+    }
+  }
+
   return ERR_OK;
 }
 
@@ -114,9 +251,11 @@ static err_t lwftp_data_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     } else {
       LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: sinking %d bytes\n",p->tot_len));
     }
+    lwftp_data_start_timeout(s);
     tcp_recved(tpcb, p->tot_len);
     pbuf_free(p);
   } else {
+    lwftp_data_stop_timeout(s);
     // NULL pbuf shall lead to close the pcb. Close is postponed after
     // the session state machine updates. No need to close right here.
     // Instead we kindly tell data sink we are done
@@ -151,6 +290,7 @@ static void lwftp_data_err(void *arg, err_t err)
   LWIP_UNUSED_ARG(err);
   if (arg != NULL) {
     lwftp_session_t *s = (lwftp_session_t*)arg;
+    lwftp_data_stop_timeout(s);
     LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:failed/error connecting for data to server (%s)\n",lwip_strerr(err)));
     s->data_pcb = NULL; // No need to de-allocate PCB
     if (s->control_state==LWFTP_XFERING) { // gracefully move control session ahead
@@ -217,6 +357,7 @@ static err_t lwftp_data_open(lwftp_session_t *s, struct pbuf *p)
   tcp_err(s->data_pcb, lwftp_data_err);
   tcp_recv(s->data_pcb, lwftp_data_recv);
   tcp_sent(s->data_pcb, lwftp_data_sent);
+  tcp_poll(s->data_pcb, (tcp_poll_fn) &lwftp_check_timeout, POLL_INTERVAL);
   error = tcp_connect(s->data_pcb, &data_server, data_port, lwftp_data_connected);
   return error;
 }
@@ -258,6 +399,7 @@ static err_t lwftp_send_msg(lwftp_session_t *s, const char* msg, size_t len)
  */
 static void lwftp_data_close(lwftp_session_t *s, int result)
 {
+  lwftp_data_stop_timeout(s);
   if (s->data_pcb) {
     lwftp_pcb_close(s->data_pcb);
     s->data_pcb = NULL;
@@ -273,6 +415,8 @@ static void lwftp_data_close(lwftp_session_t *s, int result)
  */
 static void lwftp_control_close(lwftp_session_t *s, int result)
 {
+  lwftp_data_stop_timeout(s);
+  lwftp_ctrl_stop_timeout(s);
   if (s->data_pcb) {
     lwftp_pcb_close(s->data_pcb);
     s->data_pcb = NULL;
@@ -304,6 +448,10 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   if (p) {
     response = strtoul(p->payload, &remaining_payload, 10);
     LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
+    if (response > 0)
+    {
+      lwftp_ctrl_start_timeout(s);
+    }
   }
 
   switch (s->control_state) {
@@ -384,6 +532,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
               lwftp_data_open(s,p);
               lwftp_send_msg(s, PTRNLEN("RETR "));
               lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
+              lwftp_data_start_timeout(s);
               break;
             case LWFTP_REST_SENT:
               lwftp_data_open(s,p);
@@ -391,6 +540,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
               snprintf(buf, sizeof(buf), "%llu", s->restart);
               LWIP_DEBUGF(LWFTP_TRACE, ("lwftp: Requesting restart at offset %s\n", buf));
               lwftp_send_msg_copy(s, buf, strlen(buf), 1);
+              lwftp_data_start_timeout(s);
               break;
             default:
               LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected internal state\n"));
@@ -632,6 +782,7 @@ static err_t lwftp_control_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p,
 static err_t lwftp_control_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
 {
   LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:successfully sent %d bytes\n",len));
+  lwftp_ctrl_start_timeout(arg);
   return ERR_OK;
 }
 
@@ -641,18 +792,22 @@ static err_t lwftp_control_sent(void *arg, struct tcp_pcb *tpcb, u16_t len)
  */
 static void lwftp_control_err(void *arg, err_t err)
 {
-  LWIP_UNUSED_ARG(err);
   if (arg != NULL) {
     lwftp_session_t *s = (lwftp_session_t*)arg;
     int result;
-    if( s->control_state == LWFTP_CLOSED ) {
+    lwftp_ctrl_stop_timeout(s);
+    if (err == ERR_TIMEOUT) {
+      LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: connection timed out\n"));
+      result = LWFTP_RESULT_ERR_TIMEOUT;
+    } else if (s->control_state == LWFTP_CLOSED ) {
       LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:failed to connect to server (%s)\n",lwip_strerr(err)));
       result = LWFTP_RESULT_ERR_CONNECT;
+      s->control_pcb = NULL; // No need to de-allocate PCB
     } else {
       LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:connection closed by remote host\n"));
       result = LWFTP_RESULT_ERR_CLOSED;
+      s->control_pcb = NULL; // No need to de-allocate PCB
     }
-    s->control_pcb = NULL; // No need to de-allocate PCB
     lwftp_control_close(s, result);
   }
 }
@@ -696,6 +851,10 @@ err_t lwftp_connect(lwftp_session_t *s)
     retval = LWFTP_RESULT_ERR_ARGUMENT;
     goto exit;
   }
+  s->data_timeout = 0;
+  s->ctrl_timeout = 0;
+  s->prev_check = sys_now();
+
   // Get sessions pcb
   s->control_pcb = tcp_new();
   if (!s->control_pcb) {
@@ -708,6 +867,7 @@ err_t lwftp_connect(lwftp_session_t *s)
   tcp_err(s->control_pcb, lwftp_control_err);
   tcp_recv(s->control_pcb, lwftp_control_recv);
   tcp_sent(s->control_pcb, lwftp_control_sent);
+  tcp_poll(s->control_pcb, (tcp_poll_fn) &lwftp_check_timeout, POLL_INTERVAL);
   error = tcp_connect(s->control_pcb, &s->server_ip, s->server_port, lwftp_control_connected);
   if ( error == ERR_OK ) {
     retval = LWFTP_RESULT_INPROGRESS;
