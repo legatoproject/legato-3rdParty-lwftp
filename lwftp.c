@@ -218,11 +218,14 @@ static err_t lwftp_send_next_data(lwftp_session_t *s)
 
   if (s->data_source) {
     len = s->data_source(s->handle, &data, s->data_pcb->mss);
-    if (len) {
+    if (len > 0) {
       error = tcp_write(s->data_pcb, data, len, 0);
       if (error!=ERR_OK) {
         LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp:write failure (%s), not implemented\n",lwip_strerr(error)));
       }
+    } else if (len < 0) {
+      // Suspending until resume is called.
+      lwftp_ctrl_stop_timeout(s);
     }
   }
   if (!len) {
@@ -231,6 +234,106 @@ static err_t lwftp_send_next_data(lwftp_session_t *s)
     s->data_pcb = NULL;
   }
   return ERR_OK;
+}
+
+/** Wrapper around lwftp_send_next_data() to discard return value.
+ *
+ *  @param s Pointer to lwftp session data.
+ */
+static void send_next_data(lwftp_session_t *s)
+{
+  lwftp_send_next_data(s);
+}
+
+/** Schedule sourcing of next data chunk to resume sending when the stream has been temporarily
+ *  quiescent.
+ *
+ *  @param s Pointer to lwftp session data.
+ *
+ *  @return
+ *    - LWFTP_RESULT_OK on success.
+ *    - LWFTP_RESULT_ERR_INTERNAL if the request could not be resumed.
+ */
+err_t lwftp_resume_send(lwftp_session_t *s)
+{
+  lwftp_ctrl_start_timeout(s);
+  if (s->control_state == LWFTP_XFERING) {
+    if (tcpip_callback((tcpip_callback_fn) &send_next_data, s) == ERR_OK) {
+      return LWFTP_RESULT_OK;
+    }
+  }
+  return LWFTP_RESULT_ERR_INTERNAL;
+}
+
+/** Receive and sink more file data from the server.
+ *
+ *  @param s Pointer to lwftp session data.
+ */
+static void recv_next_data(lwftp_session_t *s)
+{
+  struct pbuf   *p;
+  struct pbuf   *q;
+  uint           consumed;
+
+  // Consume what we can of the available pbufs.
+  while (s->receiving != NULL) {
+    p = s->receiving;
+
+    if (s->data_sink) {
+      consumed = s->data_sink(s->handle, ((const char *) p->payload) + s->sunk, p->len - s->sunk);
+      s->sunk += consumed;
+
+      if (consumed == 0) {
+        // Could not consume entire pbuf chain right now, defer the rest until the next call.
+        return;
+      } else if (s->sunk >= p->len) {
+        s->sunk = 0;
+        tcp_recved(s->data_pcb, p->len);
+
+        pbuf_ref(p->next);
+        q = pbuf_dechain(p);
+        pbuf_free(p);
+        s->receiving = q;
+      }
+    } else {
+      LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: sinking %d bytes\n", p->tot_len));
+      pbuf_free(p);
+      s->receiving = NULL;
+    }
+  }
+
+  if (s->recv_done) {
+    lwftp_data_stop_timeout(s);
+    // NULL pbuf shall lead to close the pcb. Close is postponed after
+    // the session state machine updates. No need to close right here.
+    // Instead we kindly tell data sink we are done
+    if (s->data_sink) {
+      s->data_sink(s->handle, NULL, 0);
+    }
+  } else {
+    // Consumed all available data, so restart timeout while we wait for more.
+    lwftp_data_start_timeout(s);
+  }
+}
+
+/** Schedule sinking of next data chunk to resume receiving when more data can be accepted.
+ *
+ *  @param s Pointer to lwftp session data.
+ *
+ *  @return
+ *    - LWFTP_RESULT_OK on success.
+ *    - LWFTP_RESULT_ERR_INTERNAL if the request could not be resumed.
+ */
+err_t lwftp_resume_recv(lwftp_session_t *s)
+{
+  if (s->control_state == LWFTP_XFERING) {
+    if (tcpip_callback((tcpip_callback_fn) &recv_next_data, s) == ERR_OK) {
+      return LWFTP_RESULT_OK;
+    }
+  }
+
+  lwftp_data_start_timeout(s);
+  return LWFTP_RESULT_ERR_INTERNAL;
 }
 
 /** Handle data connection incoming data
@@ -242,27 +345,15 @@ static err_t lwftp_send_next_data(lwftp_session_t *s)
 static err_t lwftp_data_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err)
 {
   lwftp_session_t *s = (lwftp_session_t*)arg;
-  if (p) {
-    if (s->data_sink) {
-      struct pbuf *q;
-      for (q=p; q; q=q->next) {
-        s->data_sink(s->handle, q->payload, q->len);
-      }
-    } else {
-      LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: sinking %d bytes\n",p->tot_len));
-    }
-    lwftp_data_start_timeout(s);
-    tcp_recved(tpcb, p->tot_len);
-    pbuf_free(p);
+
+  if (s->receiving == NULL) {
+    s->receiving = p;
   } else {
-    lwftp_data_stop_timeout(s);
-    // NULL pbuf shall lead to close the pcb. Close is postponed after
-    // the session state machine updates. No need to close right here.
-    // Instead we kindly tell data sink we are done
-    if (s->data_sink) {
-      s->data_sink(s->handle, NULL, 0);
-    }
+    pbuf_cat(s->receiving, p);
   }
+  s->recv_done = (p == NULL);
+
+  recv_next_data(s);
   return ERR_OK;
 }
 
@@ -851,6 +942,9 @@ err_t lwftp_connect(lwftp_session_t *s)
     retval = LWFTP_RESULT_ERR_ARGUMENT;
     goto exit;
   }
+  s->sunk = 0;
+  s->receiving = NULL;
+  s->recv_done = 0;
   s->data_timeout = 0;
   s->ctrl_timeout = 0;
   s->prev_check = sys_now();

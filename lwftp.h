@@ -89,7 +89,7 @@ typedef struct {
   const char          *pass;
   unsigned long long  restart;
   void                *handle;
-  uint                (*data_source)(void*, const char**, uint);
+  int                 (*data_source)(void*, const char**, uint);
   uint                (*data_sink)(void*, const char*, uint);
   void                (*done_fn)(void*, int);
   uint                timeout;
@@ -102,11 +102,16 @@ typedef struct {
   u32_t               data_timeout;
   u32_t               ctrl_timeout;
   u32_t               prev_check;
+  u32_t               sunk;
+  struct pbuf         *receiving;
+  int                 recv_done;
 } lwftp_session_t;
 
 // LWFTP API
 err_t lwftp_connect(lwftp_session_t *s);
 err_t lwftp_store(lwftp_session_t *s);
+err_t lwftp_resume_send(lwftp_session_t *s);
+err_t lwftp_resume_recv(lwftp_session_t *s);
 err_t lwftp_append(lwftp_session_t *s);
 err_t lwftp_retrieve(lwftp_session_t *s);
 err_t lwftp_delete(lwftp_session_t *s);
