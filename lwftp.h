@@ -93,6 +93,7 @@ typedef struct {
   uint                (*data_sink)(void*, const char*, uint);
   void                (*done_fn)(void*, int);
   uint                timeout;
+  uint                response;
   // Internal data
   lwftp_state_t       control_state;
   lwftp_state_t       target_state;

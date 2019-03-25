@@ -545,6 +545,12 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
     }
   }
 
+  // Preserve the FTP response code of the last operation, and ensure that quitting after an error
+  // doesn't discard it.
+  if (s->control_state != LWFTP_QUIT_SENT || s->response == 0) {
+    s->response = response;
+  }
+
   switch (s->control_state) {
     case LWFTP_CONNECTED:
       if (response>0) {
@@ -837,6 +843,7 @@ static void lwftp_send_QUIT(void *arg)
     lwftp_send_msg(s, PTRNLEN("QUIT\n"));
     tcp_output(s->control_pcb);
     s->control_state = LWFTP_QUIT_SENT;
+    s->response = 0;
   }
 }
 
@@ -942,6 +949,7 @@ err_t lwftp_connect(lwftp_session_t *s)
     retval = LWFTP_RESULT_ERR_ARGUMENT;
     goto exit;
   }
+  s->response = 0;
   s->sunk = 0;
   s->receiving = NULL;
   s->recv_done = 0;
