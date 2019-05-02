@@ -557,7 +557,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
         if (response==220) {
           lwftp_send_msg(s, PTRNLEN("USER "));
           lwftp_send_msg(s, s->user, strlen(s->user));
-          lwftp_send_msg(s, PTRNLEN("\n"));
+          lwftp_send_msg(s, PTRNLEN("\r\n"));
           s->control_state = LWFTP_USER_SENT;
         } else {
           s->control_state = LWFTP_QUIT;
@@ -569,7 +569,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
         if (response==331) {
           lwftp_send_msg(s, PTRNLEN("PASS "));
           lwftp_send_msg(s, s->pass, strlen(s->pass));
-          lwftp_send_msg(s, PTRNLEN("\n"));
+          lwftp_send_msg(s, PTRNLEN("\r\n"));
           s->control_state = LWFTP_PASS_SENT;
         } else {
           s->control_state = LWFTP_QUIT;
@@ -593,9 +593,9 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       if (response>0) {
         if (response==200) {
           if (IP_IS_V4(&s->server_ip)) {
-            lwftp_send_msg(s, PTRNLEN("PASV\n"));
+            lwftp_send_msg(s, PTRNLEN("PASV\r\n"));
           } else {
-            lwftp_send_msg(s, PTRNLEN("EPSV\n"));
+            lwftp_send_msg(s, PTRNLEN("EPSV\r\n"));
           }
           s->control_state = LWFTP_PASV_SENT;
         } else {
@@ -643,7 +643,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
               LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp: Unexpected internal state\n"));
               s->target_state = LWFTP_QUIT;
             }
-          lwftp_send_msg(s, PTRNLEN("\n"));
+          lwftp_send_msg(s, PTRNLEN("\r\n"));
           s->control_state = s->target_state;
         } else {
           s->control_state = LWFTP_QUIT;
@@ -655,7 +655,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
         if (response == 350) {
           lwftp_send_msg(s, PTRNLEN("RETR "));
           lwftp_send_msg(s, s->remote_path, strlen(s->remote_path));
-          lwftp_send_msg(s, PTRNLEN("\n"));
+          lwftp_send_msg(s, PTRNLEN("\r\n"));
           s->control_state = LWFTP_RETR_SENT;
         } else {
           s->control_state = LWFTP_DATAEND;
@@ -759,7 +759,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       s->control_state = LWFTP_LOGGED;
       break;
     case LWFTP_QUIT:
-      lwftp_send_msg(s, PTRNLEN("QUIT\n"));
+      lwftp_send_msg(s, PTRNLEN("QUIT\r\n"));
       tcp_output(s->control_pcb);
       s->control_state = LWFTP_QUIT_SENT;
       break;
@@ -777,7 +777,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
 static void lwftp_start_cmd(lwftp_session_t *s, lwftp_state_t target_state)
 {
   if ( s->control_state == LWFTP_LOGGED ) {
-    lwftp_send_msg(s, PTRNLEN("TYPE I\n"));
+    lwftp_send_msg(s, PTRNLEN("TYPE I\r\n"));
     s->control_state = LWFTP_TYPE_SENT;
     s->target_state = target_state;
   } else {
@@ -840,7 +840,7 @@ static void lwftp_send_QUIT(void *arg)
   lwftp_session_t *s = (lwftp_session_t*)arg;
 
   if (s->control_pcb) {
-    lwftp_send_msg(s, PTRNLEN("QUIT\n"));
+    lwftp_send_msg(s, PTRNLEN("QUIT\r\n"));
     tcp_output(s->control_pcb);
     s->control_state = LWFTP_QUIT_SENT;
     s->response = 0;
