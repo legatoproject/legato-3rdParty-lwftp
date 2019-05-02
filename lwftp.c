@@ -530,19 +530,29 @@ static void lwftp_control_close(lwftp_session_t *s, int result)
 static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, struct pbuf *p)
 {
   char                 buf[32];
-  char                *remaining_payload = NULL;
+  char                *remaining_payload = NULL, *token = NULL, *rspBuf = NULL;
   int                  result = LWFTP_RESULT_ERR_SRVR_RESP;
-  uint                 response = 0;
+  uint                 response = 0, validRspFound = 0;
   unsigned long long   size;
 
   // Try to get response number
   if (p) {
-    response = strtoul(p->payload, &remaining_payload, 10);
-    LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
-    if (response > 0)
-    {
-      lwftp_ctrl_start_timeout(s);
+    rspBuf = p->payload;
+    while(!validRspFound && (token = strtok_r(rspBuf, "\n", &rspBuf))) {
+      response = strtoul(token, &remaining_payload, 10);
+      LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
+      if ((*remaining_payload == ' ') && (response > 0)) {
+        validRspFound = 1;
+      }
     }
+  }
+  if (validRspFound)
+  {
+    lwftp_ctrl_start_timeout(s);
+  }
+  else // Invalid response
+  {
+    return;
   }
 
   // Preserve the FTP response code of the last operation, and ensure that quitting after an error
