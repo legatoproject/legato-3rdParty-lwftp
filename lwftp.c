@@ -924,6 +924,7 @@ static void lwftp_control_err(void *arg, err_t err)
     if (err == ERR_TIMEOUT) {
       LWIP_DEBUGF(LWFTP_WARNING, ("lwftp: connection timed out\n"));
       result = LWFTP_RESULT_ERR_TIMEOUT;
+      s->response = 0;
     } else if (s->control_state == LWFTP_CLOSED ) {
       LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:failed to connect to server (%s)\n",lwip_strerr(err)));
       result = LWFTP_RESULT_ERR_CONNECT;
