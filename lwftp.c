@@ -55,6 +55,7 @@
 static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, struct pbuf *p);
 static void lwftp_control_err(void *arg, err_t err);
 static void lwftp_data_err(void *arg, err_t err);
+static void lwftp_data_close(lwftp_session_t *s, int result);
 
 /** Close control or data pcb
  * @param pointer to lwftp session data
@@ -310,6 +311,11 @@ static void recv_next_data(lwftp_session_t *s)
     if (s->data_sink) {
       s->data_sink(s->handle, NULL, 0);
     }
+    if ( s->control_state == LWFTP_XFEREND )
+    {
+      lwftp_data_close(s, LWFTP_RESULT_OK);
+      s->control_state = LWFTP_LOGGED;
+    }
   } else {
     // Consumed all available data, so restart timeout while we wait for more.
     lwftp_data_start_timeout(s);
@@ -326,7 +332,7 @@ static void recv_next_data(lwftp_session_t *s)
  */
 err_t lwftp_resume_recv(lwftp_session_t *s)
 {
-  if (s->control_state == LWFTP_XFERING) {
+  if (s->control_state == LWFTP_XFERING || s->control_state == LWFTP_XFEREND) {
     if (tcpip_callback((tcpip_callback_fn) &recv_next_data, s) == ERR_OK) {
       return LWFTP_RESULT_OK;
     }
@@ -348,11 +354,12 @@ static err_t lwftp_data_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
 
   if (s->receiving == NULL) {
     s->receiving = p;
-  } else {
+  } else if(p != NULL) {
     pbuf_cat(s->receiving, p);
   }
-  s->recv_done = (p == NULL);
-
+  if (p==NULL && s->receiving == NULL) {
+    s->recv_done = 1;
+  }
   recv_next_data(s);
   return ERR_OK;
 }
@@ -732,12 +739,22 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
       if (response>0) {
         if (response==226) {
           result = LWFTP_RESULT_OK;
+          if(s->recv_done) {
+            s->control_state = LWFTP_DATAEND;
+          }
+          else {
+            s->control_state = LWFTP_XFEREND;
+          }
         } else {
           result = LWFTP_RESULT_ERR_CLOSED;
           LWIP_DEBUGF(LWFTP_WARNING, ("lwftp:expected 226, received %d\n",response));
+          s->control_state = LWFTP_DATAEND;
         }
-        s->control_state = LWFTP_DATAEND;
       }
+      break;
+    case LWFTP_XFEREND:
+      LWIP_DEBUGF(LWFTP_WARNING,
+        ("lwftp:Received a control message in LWFTP_XFEREND state, ignoring\n"));
       break;
     case LWFTP_DATAEND:
       LWIP_DEBUGF(LWFTP_TRACE, ("lwftp: forced end of data session\n"));

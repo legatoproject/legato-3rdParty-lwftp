@@ -76,7 +76,8 @@ typedef enum  {
   LWFTP_DELE_SENT,
   LWFTP_SIZE_SENT,
   LWFTP_REST_SENT,
-  LWFTP_APPE_SENT
+  LWFTP_APPE_SENT,
+  LWFTP_XFEREND
 } lwftp_state_t;
 
 /** LWFTP session structure */
