@@ -221,6 +221,7 @@ static err_t lwftp_send_next_data(lwftp_session_t *s)
     len = s->data_source(s->handle, &data, s->data_pcb->mss);
     if (len > 0) {
       error = tcp_write(s->data_pcb, data, len, 0);
+      lwftp_ctrl_start_timeout(s);
       if (error!=ERR_OK) {
         LWIP_DEBUGF(LWFTP_SEVERE, ("lwftp:write failure (%s), not implemented\n",lwip_strerr(error)));
       }
@@ -286,6 +287,7 @@ static void recv_next_data(lwftp_session_t *s)
 
       if (consumed == 0) {
         // Could not consume entire pbuf chain right now, defer the rest until the next call.
+        lwftp_data_start_timeout(s);
         return;
       } else if (s->sunk >= p->len) {
         s->sunk = 0;
@@ -555,7 +557,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   }
   if (validRspFound)
   {
-    lwftp_ctrl_start_timeout(s);
+    lwftp_ctrl_stop_timeout(s);
   }
   else // Invalid response
   {
