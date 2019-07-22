@@ -73,16 +73,19 @@ typedef enum  {
   LWFTP_QUIT,
   LWFTP_QUIT_SENT,
   LWFTP_CLOSING,
+#ifndef NO_SWI
   LWFTP_DELE_SENT,
   LWFTP_SIZE_SENT,
   LWFTP_REST_SENT,
   LWFTP_APPE_SENT,
   LWFTP_XFEREND
+#endif
 } lwftp_state_t;
 
 /** LWFTP session structure */
 typedef struct {
   // User interface
+#ifndef NO_SWI
   ip_addr_t           server_ip;
   u16_t               server_port;
   const char          *remote_path;
@@ -107,17 +110,39 @@ typedef struct {
   u32_t               sunk;
   struct pbuf         *receiving;
   int                 recv_done;
+#else
+  ip_addr_t     server_ip;
+  u16_t         server_port;
+  const char    *remote_path;
+  const char    *user;
+  const char    *pass;
+  void          *handle;
+  uint          (*data_source)(void*, const char**, uint);
+  uint          (*data_sink)(void*, const char*, uint);
+  void          (*done_fn)(void*, int);
+  uint          timeout;
+  // Internal data
+  lwftp_state_t   control_state;
+  lwftp_state_t   target_state;
+  lwftp_state_t   data_state;
+  struct tcp_pcb  *control_pcb;
+  struct tcp_pcb  *data_pcb;
+#endif
 } lwftp_session_t;
 
 // LWFTP API
 err_t lwftp_connect(lwftp_session_t *s);
 err_t lwftp_store(lwftp_session_t *s);
+#ifndef NO_SWI
 err_t lwftp_resume_send(lwftp_session_t *s);
 err_t lwftp_resume_recv(lwftp_session_t *s);
 err_t lwftp_append(lwftp_session_t *s);
+#endif
 err_t lwftp_retrieve(lwftp_session_t *s);
+#ifndef NO_SWI
 err_t lwftp_delete(lwftp_session_t *s);
 err_t lwftp_size(lwftp_session_t *s);
+#endif
 void  lwftp_close(lwftp_session_t *s);
 
 #ifdef __cplusplus
