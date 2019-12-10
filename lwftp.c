@@ -385,7 +385,8 @@ static err_t lwftp_data_recv(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, er
     s->receiving = p;
   } else if(p != NULL) {
     pbuf_cat(s->receiving, p);
-  } else {
+  }
+  if (p==NULL) {
     s->recv_done = 1;
   }
 
