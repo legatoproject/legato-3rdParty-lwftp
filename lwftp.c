@@ -633,7 +633,7 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
 {
 #ifndef NO_SWI
   char                 buf[32];
-  char                *remaining_payload = NULL, *token = NULL, *rspBuf = NULL;
+  char                *remaining_payload = NULL, *token = NULL, *rspBuf = NULL, *rspIndPtr = NULL;
   int                  result = LWFTP_RESULT_ERR_SRVR_RESP;
   uint                 response = 0, validRspFound = 0;
   unsigned long long   size;
@@ -645,14 +645,31 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   // Try to get response number
   if (p) {
 #ifndef NO_SWI
-    rspBuf = p->payload;
-    while(!validRspFound && (token = strtok_r(rspBuf, "\n", &rspBuf))) {
+    /* Create buffer with space for null terminator */
+    rspBuf = (char*)malloc(p->len + 1);
+    if (!rspBuf) {
+      LWIP_DEBUGF(LWFTP_SERIOUS, ("lwftp:cannot allocate response buffer\n"));
+      pbuf_free(p);
+      return;
+    }
+    snprintf(rspBuf, (p->len + 1), "%s", (char*)p->payload);
+
+    /* Use additional ptr to iterate through response string as strtok_r will modify it */
+    rspIndPtr = rspBuf;
+
+    while(!validRspFound && (token = strtok_r(rspIndPtr, "\n", &rspIndPtr))) {
       response = strtoul(token, &remaining_payload, 10);
-      LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
+      LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n", response));
       if ((*remaining_payload == ' ') && (response > 0)) {
         validRspFound = 1;
       }
     }
+
+    /* Buffer is no longer needed */
+    free(rspBuf);
+    rspBuf = NULL;
+    rspIndPtr = NULL;
+
 #else
     response = strtoul(p->payload, NULL, 10);
     LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
@@ -665,6 +682,9 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   }
   else // Invalid response
   {
+    if (p) {
+      pbuf_free(p);
+    }
     return;
   }
 
