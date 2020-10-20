@@ -664,12 +664,6 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
         validRspFound = 1;
       }
     }
-
-    /* Buffer is no longer needed */
-    free(rspBuf);
-    rspBuf = NULL;
-    rspIndPtr = NULL;
-
 #else
     response = strtoul(p->payload, NULL, 10);
     LWIP_DEBUGF(LWFTP_TRACE, ("lwftp:got response %d\n",response));
@@ -680,10 +674,17 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   {
     lwftp_ctrl_stop_timeout(s);
   }
-  else // Invalid response
+  /*Invalid response. Free resources.*/
+  else
   {
     if (p) {
       pbuf_free(p);
+    }
+    if (rspBuf)
+    {
+      free(rspBuf);
+      rspBuf = NULL;
+      rspIndPtr = NULL;
     }
     return;
   }
@@ -978,6 +979,14 @@ static void lwftp_control_process(lwftp_session_t *s, struct tcp_pcb *tpcb, stru
   if (p) {
     pbuf_free(p);
   }
+  #ifndef NO_SWI
+  if (rspBuf)
+  {
+    free(rspBuf);
+    rspBuf = NULL;
+    rspIndPtr = NULL;
+  }
+  #endif
 
   // Handle second step in state machine
   switch ( s->control_state ) {
